@@ -4,6 +4,8 @@ import AppError from '@shared/errors/AppError';
 
 import IProductsRepository from '@modules/products/repositories/IProductsRepository';
 import ICustomersRepository from '@modules/customers/repositories/ICustomersRepository';
+import IUpdateProductsQuantityDTO from '@modules/products/dtos/IUpdateProductsQuantityDTO';
+import { appendFile } from 'fs';
 import Order from '../infra/typeorm/entities/Order';
 import IOrdersRepository from '../repositories/IOrdersRepository';
 
@@ -20,13 +22,68 @@ interface IRequest {
 @injectable()
 class CreateOrderService {
   constructor(
+    @inject('OrdersRepository')
     private ordersRepository: IOrdersRepository,
+
+    @inject('ProductsRepository')
     private productsRepository: IProductsRepository,
+
+    @inject('CustomersRepository')
     private customersRepository: ICustomersRepository,
   ) {}
 
   public async execute({ customer_id, products }: IRequest): Promise<Order> {
-    // TODO
+    const customerExist = await this.customersRepository.findById(customer_id);
+
+    if (!customerExist) {
+      throw new AppError('This customer does not exists');
+    }
+
+    const productsIds = products.map(product => ({ id: product.id }));
+
+    const findProducts = await this.productsRepository.findAllById(productsIds);
+
+    if (productsIds.length !== findProducts.length) {
+      throw new AppError('One or more products was not found');
+    }
+
+    const updatedQuantities: IUpdateProductsQuantityDTO[] = [];
+
+    const updatedProducts = findProducts.map(findProduct => {
+      const orderProduct = products.find(
+        product => product.id === findProduct.id,
+      );
+
+      if (orderProduct) {
+        if (findProduct.quantity < orderProduct.quantity) {
+          throw new AppError(
+            `The ${findProduct.name} have less stock available than the order quantity`,
+          );
+        }
+
+        updatedQuantities.push({
+          id: orderProduct.id,
+          quantity: findProduct.quantity - orderProduct.quantity,
+        });
+
+        return { ...findProduct, quantity: orderProduct.quantity };
+      }
+
+      return findProduct;
+    });
+
+    await this.productsRepository.updateQuantity(updatedQuantities);
+
+    const order = await this.ordersRepository.create({
+      customer: customerExist,
+      products: updatedProducts.map(product => ({
+        product_id: product.id,
+        price: product.price,
+        quantity: product.quantity,
+      })),
+    });
+
+    return order;
   }
 }
 
